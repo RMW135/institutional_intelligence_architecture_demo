@@ -1098,7 +1098,7 @@ MATCH (q:Quantifier)-[:GROUNDS_IN]->(pol:Policy)
       <-[:TRIGGERED_POLICY]-(d:Decision)
       -[:MADE_BY]->(person:Person)
       -[:HAS_ROLE]->(role:Role)
-WHERE d.status IN ['escalate', 'escalated', 'deny', 'denied']
+WHERE d.status IN ['escalate', 'deny']
 WITH q, pol,
      collect(DISTINCT role.name)   AS roles_involved,
      count(DISTINCT role.name)     AS unique_roles,
@@ -1108,9 +1108,9 @@ WHERE unique_roles >= q.threshold_unique_roles
   AND frequency   >= q.threshold_frequency
 WITH q, pol, roles_involved, unique_roles, frequency, statuses,
      CASE
-       WHEN size([s IN statuses WHERE s IN ['deny', 'denied']]) > 0
+       WHEN size([s IN statuses WHERE s = 'deny']) > 0
          THEN 'EntityReclassification'
-       WHEN size([s IN statuses WHERE s IN ['escalate', 'escalated']]) = size(statuses)
+       WHEN size([s IN statuses WHERE s = 'escalate']) = size(statuses)
          THEN 'RelationshipMisdrawn'
        ELSE 'OntologyGap'
      END AS hyp_type
