@@ -1,0 +1,738 @@
+// =============================================================================
+// META-ONTOLOGICAL DEVELOPMENT ENVIRONMENT — Standalone (Revised)
+// Author: Ryan M. Williams, Ph.D.
+// =============================================================================
+//
+// PURPOSE:
+//   Self-contained development environment for the meta-ontological reasoning
+//   layer. Includes its own mock company graph so it can be loaded into a
+//   separate Neo4j instance without requiring the Full Intelligence System
+//   seed graph.
+//
+// REVISION NOTES (2026-04-12):
+//   - Confidence scores REMOVED from LogicalRelation nodes.
+//     Rationale: A logical relation (material implication, sequence, etc.)
+//     is either valid or not. It carries no intrinsic uncertainty.
+//     Uncertainty belongs on the grounding step — the evidence that caused
+//     a proposition to be asserted — not on the relation itself.
+//     This was a category error in the prior version.
+//
+//   - ConnectiveType nodes for AND, OR, NOT, IMP, IFF, XOR are now
+//     explicitly marked as DERIVED ALIASES. They are not primitives.
+//     All propositional connectives are constructible from NAND + negated
+//     endpoint flags (see fol_primitive_substrate.cypher).
+//     These nodes are retained for human legibility only.
+//
+//   - Behavioral profile operators (CAUSAL, SEQ, EXCL, COEX, RESP) are
+//     retained as a SEPARATE LAYER. These are process-level operators
+//     from van der Aalst et al. (2011). They do NOT reduce to NAND —
+//     they operate over event traces, not propositions. They belong to
+//     a distinct ontological layer and are marked accordingly.
+//
+//   - LogicalRelation nodes now carry a verified:boolean property only.
+//     Removed: confidence (category error as noted above).
+//
+// STRUCTURE:
+//   Part A: Mock Company Graph
+//   Part B: Derived Connective Aliases (human legibility layer)
+//   Part C: Process Operator Layer (van der Aalst behavioral operators)
+//   Part D: Propositions
+//   Part E: Logical Relations (reified, confidence-free)
+//   Part F: Quantifier Nodes + GROUNDS_IN Bridges
+//   Part G: Drift Detection + Hypothesis Generation
+//   Part H: Verification and Development Queries
+//
+// ISOLATION NOTE:
+//   All mock node IDs use 'mock_' prefix to prevent collisions with the
+//   production seed graph. Do NOT run this file in the same database as
+//   seed_ai_structural_graph.cypher.
+//
+// =============================================================================
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PART A: MOCK COMPANY GRAPH
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// --- Constraints ---
+CREATE CONSTRAINT mock_person_name IF NOT EXISTS
+  FOR (n:Person) REQUIRE n.name IS UNIQUE;
+CREATE CONSTRAINT mock_role_name IF NOT EXISTS
+  FOR (n:Role) REQUIRE n.name IS UNIQUE;
+CREATE CONSTRAINT mock_policy_id IF NOT EXISTS
+  FOR (n:Policy) REQUIRE n.policy_id IS UNIQUE;
+CREATE CONSTRAINT mock_decision_id IF NOT EXISTS
+  FOR (n:Decision) REQUIRE n.decision_id IS UNIQUE;
+CREATE CONSTRAINT mock_learning_event_id IF NOT EXISTS
+  FOR (n:LearningEvent) REQUIRE n.event_id IS UNIQUE;
+CREATE CONSTRAINT connective_symbol_unique IF NOT EXISTS
+  FOR (c:ConnectiveType) REQUIRE c.symbol IS UNIQUE;
+CREATE CONSTRAINT proposition_id_unique IF NOT EXISTS
+  FOR (p:Proposition) REQUIRE p.id IS UNIQUE;
+CREATE CONSTRAINT logical_relation_id_unique IF NOT EXISTS
+  FOR (r:LogicalRelation) REQUIRE r.id IS UNIQUE;
+CREATE CONSTRAINT quantifier_id_unique IF NOT EXISTS
+  FOR (q:Quantifier) REQUIRE q.id IS UNIQUE;
+CREATE CONSTRAINT drift_hyp_id_unique IF NOT EXISTS
+  FOR (dh:DriftHypothesis) REQUIRE dh.id IS UNIQUE;
+
+// --- Mock Roles ---
+MERGE (:Role {name: 'MockAnalyst',           approval_limit: 25000,     domain: 'Finance'});
+MERGE (:Role {name: 'MockManager',           approval_limit: 75000,     domain: 'Finance'});
+MERGE (:Role {name: 'MockDirector',          approval_limit: 999999999, domain: 'Finance'});
+MERGE (:Role {name: 'MockComplianceOfficer', approval_limit: 999999999, domain: 'Compliance'});
+
+// --- Mock People ---
+MERGE (:Person {person_id: 'mock_P001', name: 'Alice Mock',  status: 'active'});
+MERGE (:Person {person_id: 'mock_P002', name: 'Bob Mock',    status: 'active'});
+MERGE (:Person {person_id: 'mock_P003', name: 'Carol Mock',  status: 'active'});
+MERGE (:Person {person_id: 'mock_P004', name: 'Dan Mock',    status: 'active'});
+
+MATCH (p:Person {name: 'Alice Mock'}),  (r:Role {name: 'MockAnalyst'})
+MERGE (p)-[:HAS_ROLE]->(r);
+MATCH (p:Person {name: 'Bob Mock'}),    (r:Role {name: 'MockManager'})
+MERGE (p)-[:HAS_ROLE]->(r);
+MATCH (p:Person {name: 'Carol Mock'}),  (r:Role {name: 'MockDirector'})
+MERGE (p)-[:HAS_ROLE]->(r);
+MATCH (p:Person {name: 'Dan Mock'}),    (r:Role {name: 'MockComplianceOfficer'})
+MERGE (p)-[:HAS_ROLE]->(r);
+
+// --- Mock Policies ---
+MERGE (:Policy {
+  policy_id:   'mock_POL1',
+  name:        'MockExpensePolicy',
+  description: 'Expenses above $50,000 require Director approval.',
+  active:      true
+});
+
+MERGE (:Policy {
+  policy_id:   'mock_POL2',
+  name:        'MockAuditAccessPolicy',
+  description: 'Audit records require ComplianceOfficer access.',
+  active:      true
+});
+
+// --- Mock Decisions ---
+// Designed to cross drift thresholds when detection query runs.
+
+MERGE (:Decision {
+  decision_id:  'mock_D001',
+  timestamp:    datetime('2026-03-10T09:00:00'),
+  status:       'escalated',
+  reason:       'Analyst exceeds approval threshold for high-value expense.',
+  request_text: 'Can Alice approve the $60,000 vendor payment?'
+});
+MERGE (:Decision {
+  decision_id:  'mock_D002',
+  timestamp:    datetime('2026-03-12T11:00:00'),
+  status:       'escalated',
+  reason:       'Manager exceeds approval threshold for high-value expense.',
+  request_text: 'Can Bob approve the $80,000 equipment purchase?'
+});
+MERGE (:Decision {
+  decision_id:  'mock_D003',
+  timestamp:    datetime('2026-03-14T14:00:00'),
+  status:       'escalated',
+  reason:       'Analyst exceeds approval threshold for high-value expense.',
+  request_text: 'Can Alice approve the $55,000 consulting fee?'
+});
+MERGE (:Decision {
+  decision_id:  'mock_D004',
+  timestamp:    datetime('2026-03-15T10:00:00'),
+  status:       'approved',
+  reason:       'Director is authorized for high-value expense approvals.',
+  request_text: 'Can Carol approve the $60,000 vendor payment?'
+});
+MERGE (:Decision {
+  decision_id:  'mock_D005',
+  timestamp:    datetime('2026-03-16T09:30:00'),
+  status:       'denied',
+  reason:       'Audit records require ComplianceOfficer access.',
+  request_text: 'Can Bob view the Q1 audit trail?'
+});
+MERGE (:Decision {
+  decision_id:  'mock_D006',
+  timestamp:    datetime('2026-03-17T15:00:00'),
+  status:       'denied',
+  reason:       'Audit records require ComplianceOfficer access.',
+  request_text: 'Can Alice view the Q1 audit trail?'
+});
+
+// Wire decisions to people and policies
+MATCH (d:Decision {decision_id: 'mock_D001'}), (p:Person {name: 'Alice Mock'})
+MERGE (d)-[:MADE_BY]->(p);
+MATCH (d:Decision {decision_id: 'mock_D001'}), (pol:Policy {policy_id: 'mock_POL1'})
+MERGE (d)-[:TRIGGERED_POLICY]->(pol);
+
+MATCH (d:Decision {decision_id: 'mock_D002'}), (p:Person {name: 'Bob Mock'})
+MERGE (d)-[:MADE_BY]->(p);
+MATCH (d:Decision {decision_id: 'mock_D002'}), (pol:Policy {policy_id: 'mock_POL1'})
+MERGE (d)-[:TRIGGERED_POLICY]->(pol);
+
+MATCH (d:Decision {decision_id: 'mock_D003'}), (p:Person {name: 'Alice Mock'})
+MERGE (d)-[:MADE_BY]->(p);
+MATCH (d:Decision {decision_id: 'mock_D003'}), (pol:Policy {policy_id: 'mock_POL1'})
+MERGE (d)-[:TRIGGERED_POLICY]->(pol);
+
+MATCH (d:Decision {decision_id: 'mock_D004'}), (p:Person {name: 'Carol Mock'})
+MERGE (d)-[:MADE_BY]->(p);
+MATCH (d:Decision {decision_id: 'mock_D004'}), (pol:Policy {policy_id: 'mock_POL1'})
+MERGE (d)-[:TRIGGERED_POLICY]->(pol);
+
+MATCH (d:Decision {decision_id: 'mock_D005'}), (p:Person {name: 'Bob Mock'})
+MERGE (d)-[:MADE_BY]->(p);
+MATCH (d:Decision {decision_id: 'mock_D005'}), (pol:Policy {policy_id: 'mock_POL2'})
+MERGE (d)-[:TRIGGERED_POLICY]->(pol);
+
+MATCH (d:Decision {decision_id: 'mock_D006'}), (p:Person {name: 'Alice Mock'})
+MERGE (d)-[:MADE_BY]->(p);
+MATCH (d:Decision {decision_id: 'mock_D006'}), (pol:Policy {policy_id: 'mock_POL2'})
+MERGE (d)-[:TRIGGERED_POLICY]->(pol);
+
+// --- Mock Learning Events ---
+MERGE (:LearningEvent {
+  event_id:       'mock_L001',
+  name:           'RepeatedExpenseEscalation',
+  count:          3,
+  pattern_type:   'repeated_escalation',
+  recommendation: 'Consider revising expense approval routing for amounts above $50,000.'
+});
+
+MATCH (l:LearningEvent {event_id: 'mock_L001'}),
+      (d:Decision {decision_id: 'mock_D001'})
+MERGE (l)-[:DERIVED_FROM]->(d);
+MATCH (l:LearningEvent {event_id: 'mock_L001'}),
+      (d:Decision {decision_id: 'mock_D002'})
+MERGE (l)-[:DERIVED_FROM]->(d);
+MATCH (l:LearningEvent {event_id: 'mock_L001'}),
+      (d:Decision {decision_id: 'mock_D003'})
+MERGE (l)-[:DERIVED_FROM]->(d);
+MATCH (l:LearningEvent {event_id: 'mock_L001'}),
+      (pol:Policy {policy_id: 'mock_POL1'})
+MERGE (l)-[:SUGGESTS_CHANGE_TO]->(pol);
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PART B: DERIVED CONNECTIVE ALIASES
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// These ConnectiveType nodes are DERIVED ALIASES only — human-legible names
+// for specific NAND compositions. They are NOT logical primitives.
+//
+// The actual primitive substrate is defined in fol_primitive_substrate.cypher:
+//   Primitive 1: NAND edge (sole primitive relation type)
+//   Primitive 2: negated endpoint flags (start_negated, end_negated on edge)
+//
+// NAND decomposition of each alias:
+//   AND(A,B)   = NOT(NAND(A,B))     — pure NAND with negated result context
+//   OR(A,B)    = NAND(NOT(A),NOT(B)) — start_negated:true, end_negated:true
+//   NOT(A)     = A with negated endpoint flag = true (no separate edge needed)
+//   IMP(A,B)   = NAND(A,NOT(B))     — start_negated:false, end_negated:true
+//   IFF(A,B)   = AND(IMP(A,B),IMP(B,A)) — two NAND compositions
+//   XOR(A,B)   = AND(OR(A,B),NAND(A,B)) — three NAND compositions
+//
+// These aliases are retained because:
+//   1. Human legibility for ontologists without FOL background
+//   2. The Esser/Fahland reification mechanism references named connectives
+//   3. The academic paper requires named connective types for formalization
+
+MERGE (ct:ConnectiveType {symbol: 'NAND'})
+ON CREATE SET
+  ct.latex        = '\\uparrow',
+  ct.arity        = 2,
+  ct.primitive    = true,
+  ct.derived_from = 'none',
+  ct.commutative  = true,
+  ct.associative  = false,
+  ct.description  = 'Sheffer stroke — the sole logical primitive. NOT(A AND B). Logically complete alone.'
+ON MATCH SET
+  ct.primitive    = true,
+  ct.derived_from = 'none';
+
+MERGE (:ConnectiveType {
+  symbol:       'AND',
+  latex:        '\\wedge',
+  arity:        2,
+  primitive:    false,
+  derived_from: 'NOT(NAND(A,B))',
+  commutative:  true,
+  associative:  true,
+  description:  'Conjunction [DERIVED]. Both operands hold. = NOT(NAND(A,B)).'
+});
+
+MERGE (:ConnectiveType {
+  symbol:       'OR',
+  latex:        '\\vee',
+  arity:        2,
+  primitive:    false,
+  derived_from: 'NAND(NOT(A),NOT(B))',
+  commutative:  true,
+  associative:  true,
+  description:  'Disjunction [DERIVED]. At least one operand holds. = NAND(NOT(A),NOT(B)).'
+});
+
+MERGE (:ConnectiveType {
+  symbol:       'NOT',
+  latex:        '\\neg',
+  arity:        1,
+  primitive:    false,
+  derived_from: 'endpoint negated flag on NAND edge',
+  commutative:  false,
+  associative:  false,
+  description:  'Negation [DERIVED]. Encoded as start_negated or end_negated property on NAND edge. No separate edge needed.'
+});
+
+MERGE (:ConnectiveType {
+  symbol:       'IMP',
+  latex:        '\\rightarrow',
+  arity:        2,
+  primitive:    false,
+  derived_from: 'NAND(A,NOT(B))',
+  commutative:  false,
+  associative:  false,
+  description:  'Material implication [DERIVED]. If antecedent holds then consequent holds. = NAND(A,NOT(B)) = start_negated:false, end_negated:true.'
+});
+
+MERGE (:ConnectiveType {
+  symbol:       'IFF',
+  latex:        '\\leftrightarrow',
+  arity:        2,
+  primitive:    false,
+  derived_from: 'AND(IMP(A,B),IMP(B,A))',
+  commutative:  true,
+  associative:  false,
+  description:  'Biconditional [DERIVED]. Both hold or neither holds. = AND(IMP(A,B),IMP(B,A)). Requires two NAND compositions.'
+});
+
+MERGE (:ConnectiveType {
+  symbol:       'XOR',
+  latex:        '\\oplus',
+  arity:        2,
+  primitive:    false,
+  derived_from: 'AND(OR(A,B),NAND(A,B))',
+  commutative:  true,
+  associative:  false,
+  description:  'Exclusive disjunction [DERIVED]. Exactly one operand holds. = AND(OR(A,B),NAND(A,B)). Requires three NAND compositions.'
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PART C: PROCESS OPERATOR LAYER
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Behavioral profile operators from van der Aalst, Adriansyah & de Medeiros (2011).
+// These are NOT propositional connectives and do NOT reduce to NAND.
+// They operate over event traces, not proposition truth values.
+// They belong to a distinct ontological layer: process causal structure.
+//
+// Reference: van der Aalst et al., "Causal Behavioral Profiles — Efficient
+//            Computation, Applications, and Evaluation," 2011.
+//
+// These operators are the bridge to Esser/Fahland reification (2021) —
+// causal event structures reified as graph primitives.
+
+MERGE (:ConnectiveType {
+  symbol:       'CAUSAL',
+  latex:        '\\succ',
+  arity:        2,
+  primitive:    false,
+  layer:        'process',
+  derived_from: 'van der Aalst et al. 2011 causal behavioral profile',
+  commutative:  false,
+  associative:  false,
+  description:  'Causal dependency — occurrence of A is a direct cause of B. Process layer only.'
+});
+
+MERGE (:ConnectiveType {
+  symbol:       'SEQ',
+  latex:        '\\to',
+  arity:        2,
+  primitive:    false,
+  layer:        'process',
+  derived_from: 'van der Aalst et al. 2011 causal behavioral profile',
+  commutative:  false,
+  associative:  true,
+  description:  'Strict sequence — A must precede B in every valid trace. Process layer only.'
+});
+
+MERGE (:ConnectiveType {
+  symbol:       'EXCL',
+  latex:        '\\#',
+  arity:        2,
+  primitive:    false,
+  layer:        'process',
+  derived_from: 'van der Aalst et al. 2011 causal behavioral profile',
+  commutative:  true,
+  associative:  false,
+  description:  'Exclusion — A and B never co-occur in a trace. Process layer only.'
+});
+
+MERGE (:ConnectiveType {
+  symbol:       'COEX',
+  latex:        '\\sim',
+  arity:        2,
+  primitive:    false,
+  layer:        'process',
+  derived_from: 'van der Aalst et al. 2011 causal behavioral profile',
+  commutative:  true,
+  associative:  false,
+  description:  'Co-existence — if A occurs then B occurs and vice versa. Process layer only.'
+});
+
+MERGE (:ConnectiveType {
+  symbol:       'RESP',
+  latex:        '\\triangleright',
+  arity:        2,
+  primitive:    false,
+  layer:        'process',
+  derived_from: 'van der Aalst et al. 2011 causal behavioral profile',
+  commutative:  false,
+  associative:  false,
+  description:  'Response — every occurrence of A is eventually followed by B. Process layer only.'
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PART D: PROPOSITIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Propositions are the atomic logical units this layer reasons about.
+// Truth values are maintained by the primitive substrate layer
+// (fol_primitive_substrate.cypher). The propositions here are the
+// SAME nodes — this section provides the mock-environment equivalents.
+
+MERGE (:Proposition {
+  id:          'P001',
+  label:       'PolicyGovernanceActive',
+  description: 'The governance layer is operationally active',
+  layer:       'Policy & Governance',
+  polarity:    'positive',
+  truth_value: true,
+  derived:     false
+});
+
+MERGE (:Proposition {
+  id:          'P004',
+  label:       'InstitutionalLearningTriggered',
+  description: 'A learning event has been initiated',
+  layer:       'Institutional Learning',
+  polarity:    'positive',
+  truth_value: false,
+  derived:     false
+});
+
+MERGE (:Proposition {
+  id:          'P008',
+  label:       'PolicyBoundaryDriftDetected',
+  description: 'A policy boundary has been crossed repeatedly by multiple actors across distinct roles',
+  layer:       'Meta-Ontological',
+  polarity:    'negative',
+  truth_value: false,
+  derived:     true
+});
+
+MERGE (:Proposition {
+  id:          'P009',
+  label:       'StructuralRevisionProposed',
+  description: 'A structured hypothesis about what should change has been generated',
+  layer:       'Meta-Ontological',
+  polarity:    'positive',
+  truth_value: false,
+  derived:     true
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PART E: LOGICAL RELATIONS (REIFIED, CONFIDENCE-FREE)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// LogicalRelation nodes reify the connections between Propositions.
+// They instantiate a ConnectiveType and carry antecedent/consequent edges.
+//
+// REMOVED: confidence property.
+// RATIONALE: A logical relation is either valid or not. Validity is a
+// structural property of the relation's grounding in the institutional
+// ontology — not a probabilistic assessment. Uncertainty belongs on the
+// grounding step (what evidence caused a Proposition to be asserted),
+// not on the logical relation itself. Confidence on a material implication
+// is a category error — it conflates epistemic uncertainty about premises
+// with the logical form of the inference.
+//
+// Schema:
+//   id        — unique
+//   label     — human-readable name
+//   source    — what authored this relation ('ArchitecturalInvariant', etc.)
+//   verified  — whether a knowledge architect has validated this relation
+//   created   — date
+
+// LR001: Learning precedes drift detection (sequence)
+MERGE (lr1:LogicalRelation {
+  id:       'LR001',
+  label:    'LearningPrecedesDrift',
+  source:   'ArchitecturalSequence',
+  verified: true,
+  created:  date('2026-03-28')
+})
+WITH lr1
+MATCH (ct:ConnectiveType {symbol: 'SEQ'}),
+      (ant:Proposition {id: 'P004'}),
+      (con:Proposition {id: 'P008'})
+MERGE (lr1)-[:INSTANTIATES]->(ct)
+MERGE (lr1)-[:HAS_ANTECEDENT {role: 'precondition', position: 1}]->(ant)
+MERGE (lr1)-[:HAS_CONSEQUENT {role: 'postcondition', position: 2}]->(con);
+
+// LR002: Drift detection implies structural revision (implication)
+MERGE (lr2:LogicalRelation {
+  id:       'LR002',
+  label:    'DriftImpliesRevision',
+  source:   'ArchitecturalInvariant',
+  verified: true,
+  created:  date('2026-03-28')
+})
+WITH lr2
+MATCH (ct:ConnectiveType {symbol: 'IMP'}),
+      (ant:Proposition {id: 'P008'}),
+      (con:Proposition {id: 'P009'})
+MERGE (lr2)-[:INSTANTIATES]->(ct)
+MERGE (lr2)-[:HAS_ANTECEDENT {role: 'premise',     position: 1}]->(ant)
+MERGE (lr2)-[:HAS_CONSEQUENT {role: 'conclusion',  position: 2}]->(con);
+
+// LR003: Expense drift rule (quantifier-grounded implication)
+MERGE (lr3:LogicalRelation {
+  id:       'LR003',
+  label:    'ExpenseDriftRule',
+  source:   'DriftDetectionMechanism',
+  verified: true,
+  created:  date('2026-03-28')
+})
+WITH lr3
+MATCH (ct:ConnectiveType {symbol: 'IMP'}),
+      (q:Quantifier {id: 'Q001'}),
+      (con:Proposition {id: 'P008'})
+MERGE (lr3)-[:INSTANTIATES]->(ct)
+MERGE (lr3)-[:HAS_ANTECEDENT {role: 'quantifier_condition', position: 1}]->(q)
+MERGE (lr3)-[:HAS_CONSEQUENT {role: 'conclusion',           position: 2}]->(con);
+
+// LR004: Audit access drift rule (quantifier-grounded implication)
+MERGE (lr4:LogicalRelation {
+  id:       'LR004',
+  label:    'AuditAccessDriftRule',
+  source:   'DriftDetectionMechanism',
+  verified: true,
+  created:  date('2026-03-28')
+})
+WITH lr4
+MATCH (ct:ConnectiveType {symbol: 'IMP'}),
+      (q:Quantifier {id: 'Q002'}),
+      (con:Proposition {id: 'P008'})
+MERGE (lr4)-[:INSTANTIATES]->(ct)
+MERGE (lr4)-[:HAS_ANTECEDENT {role: 'quantifier_condition', position: 1}]->(q)
+MERGE (lr4)-[:HAS_CONSEQUENT {role: 'conclusion',           position: 2}]->(con);
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PART F: QUANTIFIER NODES + GROUNDS_IN BRIDGES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Q001 monitors MockExpensePolicy
+MERGE (:Quantifier {
+  id:                     'Q001',
+  label:                  'ExpenseDriftMonitor',
+  type:                   'EXISTENTIAL',
+  monitor_pattern:        'policy_decisions',
+  description:            'Monitors escalations against MockExpensePolicy',
+  threshold_frequency:    2,
+  threshold_unique_roles: 2,
+  created:                date('2026-03-28')
+});
+
+// Q002 monitors MockAuditAccessPolicy
+MERGE (:Quantifier {
+  id:                     'Q002',
+  label:                  'AuditAccessDriftMonitor',
+  type:                   'EXISTENTIAL',
+  monitor_pattern:        'policy_decisions',
+  description:            'Monitors denials against MockAuditAccessPolicy',
+  threshold_frequency:    2,
+  threshold_unique_roles: 2,
+  created:                date('2026-03-28')
+});
+
+// Scope: each quantifier monitors the drift proposition
+MATCH (q:Quantifier {id: 'Q001'}), (p:Proposition {id: 'P008'})
+MERGE (q)-[:SCOPE]->(p);
+MATCH (q:Quantifier {id: 'Q002'}), (p:Proposition {id: 'P008'})
+MERGE (q)-[:SCOPE]->(p);
+
+// GROUNDS_IN: bridge quantifiers to company graph policies
+MATCH (q:Quantifier {id: 'Q001'}), (pol:Policy {policy_id: 'mock_POL1'})
+MERGE (q)-[:GROUNDS_IN]->(pol);
+MATCH (q:Quantifier {id: 'Q002'}), (pol:Policy {policy_id: 'mock_POL2'})
+MERGE (q)-[:GROUNDS_IN]->(pol);
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PART G: DRIFT DETECTION + HYPOTHESIS GENERATION
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// EXPECTED RESULTS with mock data:
+//
+//   MockExpensePolicy (mock_POL1):
+//     D001 (Alice/MockAnalyst, escalated) + D002 (Bob/MockManager, escalated)
+//     + D003 (Alice/MockAnalyst, escalated) = 3 decisions, 2 unique roles
+//     Q001: freq >= 2 ✓, roles >= 2 ✓ → DRIFT DETECTED
+//     All statuses 'escalated' → type: RelationshipMisdrawn
+//
+//   MockAuditAccessPolicy (mock_POL2):
+//     D005 (Bob/MockManager, denied) + D006 (Alice/MockAnalyst, denied)
+//     = 2 decisions, 2 unique roles
+//     Q002: freq >= 2 ✓, roles >= 2 ✓ → DRIFT DETECTED
+//     Statuses include 'denied' → type: EntityReclassification
+
+MATCH (q:Quantifier)-[:GROUNDS_IN]->(pol:Policy)
+      <-[:TRIGGERED_POLICY]-(d:Decision)
+      -[:MADE_BY]->(person:Person)
+      -[:HAS_ROLE]->(role:Role)
+WHERE d.status IN ['escalated', 'denied']
+WITH q, pol,
+     collect(DISTINCT role.name)  AS roles_involved,
+     count(DISTINCT role.name)    AS unique_roles,
+     count(DISTINCT d)            AS frequency,
+     collect(DISTINCT d.status)   AS statuses
+WHERE unique_roles >= q.threshold_unique_roles
+  AND frequency   >= q.threshold_frequency
+WITH q, pol, roles_involved, unique_roles, frequency, statuses,
+     CASE
+       WHEN size([s IN statuses WHERE s = 'denied']) > 0
+         THEN 'EntityReclassification'
+       WHEN size([s IN statuses WHERE s = 'escalated']) = size(statuses)
+         THEN 'RelationshipMisdrawn'
+       ELSE 'OntologyGap'
+     END AS hyp_type
+MERGE (dh:DriftHypothesis {
+  id: 'DH_' + q.id + '_' + pol.policy_id
+})
+ON CREATE SET
+  dh.type               = hyp_type,
+  dh.label              = hyp_type + '_' + pol.name,
+  dh.description        = 'Drift detected: ' + toString(frequency) +
+                          ' decisions across ' + toString(unique_roles) + ' roles',
+  dh.frequency_observed = frequency,
+  dh.unique_roles       = unique_roles,
+  dh.roles_involved     = roles_involved,
+  dh.status             = 'candidate',
+  dh.created            = datetime()
+ON MATCH SET
+  dh.frequency_observed = frequency,
+  dh.unique_roles       = unique_roles,
+  dh.roles_involved     = roles_involved,
+  dh.last_evaluated     = datetime()
+MERGE (dh)-[:CONCERNS]->(pol)
+MERGE (dh)-[:GENERATED_BY]->(q);
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PART H: VERIFICATION AND DEVELOPMENT QUERIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// H1. Confirm connective type taxonomy with primitive/derived distinction
+MATCH (ct:ConnectiveType)
+RETURN ct.symbol AS symbol, ct.primitive AS is_primitive,
+       ct.derived_from AS derived_from,
+       ct.layer AS layer,
+       ct.description AS description
+ORDER BY ct.primitive DESC, ct.symbol;
+
+// H2. Show all decisions grouped by policy
+MATCH (d:Decision)-[:TRIGGERED_POLICY]->(pol:Policy)
+OPTIONAL MATCH (d)-[:MADE_BY]->(person:Person)-[:HAS_ROLE]->(role:Role)
+RETURN pol.name AS policy, d.decision_id AS decision,
+       d.status AS status, person.name AS actor, role.name AS role
+ORDER BY pol.name, d.timestamp;
+
+// H3. Quantifier threshold vs actual counts
+MATCH (q:Quantifier)-[:GROUNDS_IN]->(pol:Policy)
+      <-[:TRIGGERED_POLICY]-(d:Decision)
+      -[:MADE_BY]->(person:Person)
+      -[:HAS_ROLE]->(role:Role)
+WHERE d.status IN ['escalated', 'denied']
+WITH q, pol,
+     count(DISTINCT role.name) AS actual_unique_roles,
+     count(DISTINCT d)         AS actual_frequency
+RETURN
+  q.id                      AS quantifier,
+  pol.name                  AS policy,
+  q.threshold_frequency     AS freq_threshold,
+  actual_frequency          AS freq_actual,
+  actual_frequency >= q.threshold_frequency AS freq_met,
+  q.threshold_unique_roles  AS role_threshold,
+  actual_unique_roles       AS roles_actual,
+  actual_unique_roles >= q.threshold_unique_roles AS roles_met;
+
+// H4. Generated DriftHypothesis nodes
+MATCH (dh:DriftHypothesis)-[:CONCERNS]->(pol:Policy)
+OPTIONAL MATCH (dh)-[:GENERATED_BY]->(q:Quantifier)
+RETURN
+  dh.id                 AS hypothesis_id,
+  dh.type               AS hypothesis_type,
+  dh.frequency_observed AS observed_frequency,
+  dh.unique_roles       AS observed_unique_roles,
+  dh.roles_involved     AS roles,
+  pol.name              AS policy_concerned,
+  q.id                  AS triggered_by;
+
+// H5. Full three-layer trace: LogicalRelation → Quantifier → Policy → Decisions
+MATCH (lr:LogicalRelation)-[:HAS_ANTECEDENT]->(q:Quantifier)
+      -[:GROUNDS_IN]->(pol:Policy)
+      <-[:TRIGGERED_POLICY]-(d:Decision)
+      -[:MADE_BY]->(person:Person)
+      -[:HAS_ROLE]->(role:Role)
+WHERE d.status IN ['escalated', 'denied']
+RETURN
+  lr.label       AS drift_rule,
+  q.id           AS quantifier,
+  pol.name       AS policy,
+  d.decision_id  AS decision,
+  d.status       AS status,
+  person.name    AS actor,
+  role.name      AS actor_role
+ORDER BY pol.name, d.timestamp;
+
+// H6. Verify no LogicalRelation nodes carry confidence (category error check)
+MATCH (lr:LogicalRelation)
+WHERE lr.confidence IS NOT NULL
+RETURN count(lr) AS logical_relations_with_confidence_SHOULD_BE_ZERO;
+
+// H7. Show logical relation chain with connective types (no confidence column)
+MATCH (lr:LogicalRelation)-[:INSTANTIATES]->(ct:ConnectiveType)
+OPTIONAL MATCH (lr)-[:HAS_ANTECEDENT]->(ant)
+OPTIONAL MATCH (lr)-[:HAS_CONSEQUENT]->(con)
+RETURN
+  lr.id        AS relation_id,
+  lr.label     AS label,
+  ct.symbol    AS connective,
+  ct.primitive AS connective_is_primitive,
+  lr.source    AS source,
+  lr.verified  AS verified,
+  labels(ant)[0] AS antecedent_type,
+  COALESCE(ant.label, ant.id) AS antecedent,
+  labels(con)[0] AS consequent_type,
+  COALESCE(con.label, con.id) AS consequent
+ORDER BY lr.id;
+
+// H8. Development: lower thresholds and re-run drift detection
+// (Uncomment to test threshold sensitivity)
+//
+// MATCH (q:Quantifier {id: 'Q001'})
+// SET q.threshold_frequency = 1
+// RETURN q.id, q.threshold_frequency;
+
+// H9. Development: clean up DriftHypothesis nodes for fresh iteration
+//
+// MATCH (dh:DriftHypothesis)
+// DETACH DELETE dh;
+
+
+// =============================================================================
+// END OF FILE
+// =============================================================================

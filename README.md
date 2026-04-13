@@ -1,14 +1,22 @@
 # Institutional Intelligence Architecture
 
-**A Five-Layer Enterprise AI Architecture**
+**A Governed Ontology for Enterprise AI — with Native Logical Reasoning**
 
 > The LLM interprets language. The graph validates authority. These two roles are never conflated.
 
 Most organizations deploy AI as a tool layered on top of existing processes — the model has no grounding in the organization's authority structures, policies, or institutional knowledge. This architecture inverts that pattern: the corporate structure itself becomes a formal component of every decision the AI makes.
 
+The IIA also addresses a problem that distributed multi-agent AI systems — including architectures like Cisco Outshift's Internet of Cognition — have identified but not yet solved: **what guarantees that the symbolic and formal logic primitives agents negotiate over are internally consistent before any inter-agent communication begins?** The IIA is the institutional substrate that provides that guarantee.
+
 ---
 
-## The Five Layers
+## The Architecture
+
+The IIA operates across two integrated layers: a **five-layer governance stack** for enterprise AI decision-making, and a **FOL primitive substrate** that provides native propositional reasoning within the labeled property graph — without external reasoners.
+
+---
+
+## Layer 1–5: Enterprise Governance Stack
 
 | # | Layer | What It Solves |
 |---|-------|----------------|
@@ -17,6 +25,33 @@ Most organizations deploy AI as a tool layered on top of existing processes — 
 | 3 | **Policy & Governance** | Governance rules become machine-checkable constraints. A plausible action can still violate institutional policy |
 | 4 | **AI Interpretation** | Natural language is normalized into a canonical institutional action before policy checks are applied |
 | 5 | **Institutional Learning** | Recurring decision patterns — repeated escalations, denials, ambiguous phrases — accumulate automatically as institutional knowledge |
+
+---
+
+## FOL Primitive Substrate (In Active Development)
+
+The FOL primitive substrate sits beneath the governance stack and provides native propositional completeness within the labeled property graph. It is logically complete from two elements only:
+
+1. **NAND edges** — the sole primitive relation type (Sheffer stroke)
+2. **Negated endpoint flags** — `start_negated` / `end_negated` properties on each NAND edge
+
+All propositional connectives are constructible from these two primitives:
+
+| Connective | NAND Composition |
+|------------|-----------------|
+| NOT(A) | negated endpoint flag = true |
+| OR(A,B) | NAND(NOT(A), NOT(B)) — start_negated:true, end_negated:true |
+| IMPLIES(A→B) | NAND(A, NOT(B)) — start_negated:false, end_negated:true |
+| AND(A,B) | NOT(NAND(A,B)) |
+
+**What this enables:**
+
+- **Forward chaining** from reified logical primitives — rules fire consequents when antecedents hold, propagating through the graph to fixpoint
+- **Contradiction detection** — oscillating shadow cascade classified as Contradiction, NecessaryOscillation, or MalformedDependency
+- **Gap proposals** — a contradiction between two legitimate ground rules surfaces a `GapProposal` node identifying the missing scope constraint, rather than flagging either rule as erroneous
+- **Counterfactual preservation** — shadow graph generation 0 preserves the assumed state at cascade initiation for causal reasoning
+
+This is the first implementation of propositional logical completeness natively within a labeled property graph without external RDF/OWL reasoners. The standard enterprise approach routes reasoning through external systems (Neosemantics, GraphScale, Virtuoso). The IIA eliminates that dependency entirely.
 
 ---
 
@@ -66,10 +101,19 @@ User Request (natural language)
 ┌─────────────────────────────┐
 │  Layer 5 · Learning          │  Auto-generated LearningEvent nodes
 │  Patterns → Recommendations  │  institutional knowledge accumulates
+└──────────────┬──────────────┘
+               │
+               ▼
+┌─────────────────────────────┐
+│  FOL Primitive Substrate     │  NAND edges + negated flags
+│  Propositions → Rules →      │  forward chaining, contradiction
+│  Contradiction → GapProposal │  detection, gap proposals
 └─────────────────────────────┘
                │
                ▼
      Decision: APPROVE / ESCALATE / DENY
+     + Justification chain (queryable, auditable)
+     + GapProposal (if contradiction detected)
 ```
 
 ---
@@ -78,9 +122,10 @@ User Request (natural language)
 
 | Component | Technology |
 |-----------|------------|
-| Knowledge graph | Neo4j (Cypher) |
+| Knowledge graph | Neo4j (Cypher) + APOC |
 | LLM extraction | Claude (Anthropic) → OpenAI → rule-based fallback |
 | Ontology methodology | Symbolic KB design (Cycorp / Cyc-derived) |
+| FOL substrate | NAND-complete LPG schema + forward chaining |
 | UI | Streamlit (seven-tab demo suite) |
 | Graph visualization | PyVis (live subgraph rendering) |
 | Language | Python 3.10+ |
@@ -91,10 +136,14 @@ User Request (natural language)
 
 ```
 institutional-intelligence-architecture/
-├── structural_demo_app.py                    # Core pipeline: extraction, graph queries, policy evaluation, absence classification
-├── structural_demo_ui.py                     # Streamlit UI — seven-tab demo suite with graph visualization
+├── structural_demo_app.py                    # Core pipeline: extraction, graph queries, policy evaluation
+├── structural_demo_ui.py                     # Streamlit UI — seven-tab demo suite
 ├── seed_ai_structural_graph.cypher           # Complete Neo4j seed graph (Apex Manufacturing org)
 ├── meta_ontology_logical_reification.cypher  # Drift detection: quantifiers, thresholds, hypothesis generation
+├── meta_ontology_standalone_dev.txt          # Standalone dev environment for meta-ontological layer
+├── fol_primitive_substrate.cypher            # FOL primitive layer: Propositions, NAND edges, Rules, Queue
+├── fol_triggers.cypher                       # APOC trigger registration (run once only)
+├── fol_procedures.cypher                     # Named query library: forward chaining, shadow cascade, gap proposals
 ├── requirements.txt
 ├── .env.example
 └── README.md
@@ -112,25 +161,27 @@ pip install -r requirements.txt
 ```
 
 ### 2. Set up Neo4j
-**Option A — Local** (recommended for development): Download Neo4j Desktop and create a local database.
+**Option A — Local** (required for full FOL substrate with APOC triggers): Download Neo4j Desktop and create a local DBMS. Install the APOC plugin. Add `apoc.trigger.enabled=true` to `apoc.conf`.
 
-**Option B — Cloud** (recommended for sharing a live demo): Create a free instance at [Neo4j AuraDB](https://neo4j.com/cloud/platform/aura-graph-database/).
+**Option B — Cloud** (for the governance demo only): Create a free instance at [Neo4j AuraDB](https://neo4j.com/cloud/platform/aura-graph-database/). Note: APOC triggers are not available on AuraDB — the FOL substrate forward chaining runs via the Python pipeline in this configuration.
 
-### 3. Seed the graph
-Open Neo4j Browser, paste the contents of `seed_ai_structural_graph.cypher`, and run it. You should see:
+### 3. Load the graph (in order)
+Open Neo4j Browser and run each file in sequence:
+
 ```
-Institutional Intelligence Architecture demo graph seeded successfully.
+1. seed_ai_structural_graph.cypher
+2. meta_ontology_logical_reification.cypher
+3. fol_primitive_substrate.cypher
+4. fol_triggers.cypher          ← run once only (requires local Neo4j with APOC)
 ```
-
-**Optional — load the meta-ontological layer:** After the seed graph is loaded, paste and run `meta_ontology_logical_reification.cypher`. This adds the drift detection layer — quantifier nodes with thresholds, grounded in specific policies from the seed graph. The demo app works without it, but the automated drift detection and absence accumulation hypothesis generation require it.
 
 ### 4. Configure environment
 ```bash
 cp .env.example .env
-# Edit .env with your Neo4j credentials and (optionally) your Anthropic or OpenAI API key
+# Edit .env with your Neo4j credentials and API keys
 ```
 
-The app works without any LLM API key — it falls back to deterministic rule-based extraction. With `ANTHROPIC_API_KEY` set, Claude handles extraction using structured tool use.
+The app works without any LLM API key — it falls back to deterministic rule-based extraction. With `ANTHROPIC_API_KEY` set, Claude handles extraction via structured tool use.
 
 ### 5. Run
 ```bash
@@ -159,44 +210,48 @@ When **Compare with raw LLM** is checked, Tab 7 shows a side-by-side: the same n
 
 The LLM receives the complete org chart, every policy, and every threshold — the exact deployment pattern most enterprises use. With this information, it often reaches the same outcome as the governed pipeline. The difference is not accuracy. It is structure. The LLM produces prose: linguistically reasonable but not machine-checkable, not auditable, and not guaranteed to be consistent across runs. The pipeline produces a governed decision linked to a specific policy, a specific constraint evaluation, and a traceable authority chain from actor to role to threshold to outcome. That record is queryable by an auditor without reconstructing anything after the fact.
 
-This comparison requires at least one LLM API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`).
-
 ---
 
 ## Auto-Learning: How It Works
 
-When **Log decision to Neo4j** is enabled, every pipeline run writes a `Decision` node to the graph and automatically detects five structural patterns. Each pattern is recorded as a `LearningEvent` node from its first occurrence — the count increments with each subsequent match, and the recommendation is surfaced each time the pattern recurs.
+When **Log decision to Neo4j** is enabled, every pipeline run writes a `Decision` node to the graph and automatically detects structural patterns recorded as `LearningEvent` nodes.
 
 | Pattern | Trigger | Recommendation Generated |
 |---------|---------|--------------------------|
 | `repeated_escalation` | Same policy triggers an escalation | Review approval routing or threshold |
 | `repeated_denial` | Same actor is denied | Review role assignment or access training |
 | `semantic_ambiguity` | An ambiguous phrase is used | Add phrase as canonical ontology alias |
-| `role_boundary` | Actor is near but below their approval limit | Consider delegation pathway or limit revision |
+| `role_boundary` | Actor is near but below approval limit | Consider delegation pathway or limit revision |
 | `ontology_absence` | LLM references a concept the graph doesn't contain | Classified structural gap — missing node, missing relationship, or misclassified entity |
 
-The `ontology_absence` pattern is distinct from the other four. It is not triggered by the decision outcome but by a discrepancy between what the LLM's interpretation implicitly assumes about the institutional ontology and what the graph actually contains. Each absence is classified into one of three structural types: `OntologyGap` (expected node does not exist), `RelationshipMisdrawn` (node exists but a required edge is missing), or `EntityReclassification` (node and edges exist but type is wrong). These types align with the three hypothesis categories in the meta-ontological layer.
+The `ontology_absence` pattern feeds directly into the FOL primitive substrate's gap detection mechanism — absences that cross quantifier thresholds generate `DriftHypothesis` nodes, which in turn ground the `GapProposal` mechanism in the logical layer.
 
-The count on each `LearningEvent` node reflects how many times the pattern has been observed. As decisions accumulate, the system builds an auditable record of structural friction points — policies that repeatedly block requests, roles that are consistently under-authorized, language that the ontology has not yet formalized, and structural gaps where the LLM's implicit model of the institution is broader than the graph's explicit model.
+---
 
-This transforms the system from a request evaluator into an institutional learning engine.
+## The Governance Gap in Multi-Agent AI
+
+Current multi-agent AI architectures — including Cisco Outshift's Internet of Cognition, the A2A protocol, and MCP — solve for how agents communicate and share context across organizational boundaries. They correctly identify that the fundamental challenge is semantic, not syntactic.
+
+What they do not yet specify is what guarantees that an institution's policies are internally consistent before agents begin negotiating over them. Their own deadlock scenario — remediation, security, and compliance agents all correct but the system frozen — is precisely the contradiction this architecture detects and surfaces before any inter-agent communication occurs.
+
+The IIA is the institutional prerequisite for distributed multi-agent cognition: a self-auditing, logically consistent, contradiction-detecting governance substrate that gives agents something true to reason from.
 
 ---
 
 ## Demo Scope Notes
 
-The current demo evaluates three action types against policy: `ApprovePayment`, `ApproveContract`, and `ViewEmployeeRecord`. The remaining canonical actions (`ReviewContract`, `TerminateEmployee`) are defined in the graph but do not yet have policy constraints — they will default to approval. This is a scope boundary of the demo, not the architecture.
+The current demo evaluates three action types against policy: `ApprovePayment`, `ApproveContract`, and `ViewEmployeeRecord`. The remaining canonical actions (`ReviewContract`, `TerminateEmployee`) are defined in the graph but do not yet have policy constraints. This is a scope boundary of the demo, not the architecture.
 
 ---
 
 ## About
 
-Built by **Ryan M. Williams, Ph.D.** — AI integration architect, ontologist, and former Cycorp knowledge engineer.
+Built by **Ryan M. Williams, Ph.D.** — AI integration architect, formal ontologist, and former Cycorp knowledge engineer.
 
 - 📧 rmwilliamsphd@gmail.com
 - 📍 Montreal, QC
 
-Prior to this work, Ryan served as an ontologist at Cycorp, Inc. (2016–2018), building symbolic knowledge bases for one of the world's largest AI inference engines. His approach to enterprise AI architecture draws directly on that methodology — applied to the organizational decision-making problems enterprises actually face.
+Prior to this work, Ryan served as an ontologist at Cycorp, Inc. (2016–2018), building symbolic knowledge bases for one of the world's largest AI inference engines. His approach to enterprise AI architecture draws directly on that methodology — applied to the organizational decision-making problems enterprises actually face, and extended to the problem of native logical completeness in labeled property graphs.
 
 ---
 
